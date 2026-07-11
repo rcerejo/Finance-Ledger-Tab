@@ -1,0 +1,33 @@
+priority,merchant_pattern,description_pattern,transaction_type,category,subcategory
+10,%Capital One Payroll%,%,credit,Income,Paycheck
+10,%Delta Air Lines Payroll%,%,credit,Income,Paycheck
+10,%Dividend%,%,credit,Income,Interest
+10,%IRS%,%,credit,Income,Tax Refund
+10,%Georgia Department of Revenue%,%,credit,Income,Tax Refund
+10,%Bank of America Payment%,%,debit,Credit Card Payment,Payment
+10,%Bank of America Payment%,%,credit,Credit Card Payment,Payment
+15,%Internal Transfer%,%,debit,Transfers,Internal Transfer
+15,%Internal Transfer%,%,credit,Transfers,Internal Transfer
+20,%Venmo%,%,debit,Transfers,Peer-to-peer
+20,%PayPal%,%,debit,Shopping,Payment Processor
+20,%Ally Bank%,%,debit,Transfers,Bank Transfer
+20,%Fidelity%,%,debit,Investments,Brokerage Transfer
+30,%MTA%,%,debit,Transportation,Public Transit
+30,%PATH%,%,debit,Transportation,Public Transit
+30,%Uber%,%,debit,Transportation,Rideshare
+30,%Lyft%,%,debit,Transportation,Rideshare
+40,%McDonald's%,%,debit,Food & Dining,Fast Food
+40,%Wendy's%,%,debit,Food & Dining,Fast Food
+40,%Al Dente Pasta%,%,debit,Food & Dining,Restaurant
+40,%Sammy's Halal%,%,debit,Food & Dining,Restaurant
+40,%99 Cents Delicious Pizza%,%,debit,Food & Dining,Restaurant
+40,%Previti Pizza%,%,debit,Food & Dining,Restaurant
+40,%West Village Finest Deli%,%,debit,Food & Dining,Deli
+40,%Hana Group%,%,debit,Food & Dining,Restaurant
+40,%Delta Tech Cafe%,%,debit,Food & Dining,Cafe
+40,%Kroger%,%,debit,Groceries,Supermarket
+40,%Publix%,%,debit,Groceries,Supermarket
+40,%Sam's Club%,%,debit,Groceries,Warehouse Club
+45,%CVS%,%,debit,Health & Pharmacy,Pharmacy
+50,%Kalshi%,%,debit,Entertainment,Trading
+90,%,%INTEREST CHARGED%,debit,Fees & Interest,Interest
