@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local/private finance data and generated outputs
+outputs/*
+!outputs/bank_statement_parser.py
+!outputs/rename_project_folder.ps1
+*.sqlite
+*.db
+*.csv
+!finance_dbt/seeds/*.csv
+!transform/seeds/*.csv
+*.joblib
+*.validation.txt
+
+# dbt generated/local files
+finance_dbt/target/
+finance_dbt/logs/
+finance_dbt/.user.yml
+finance_dbt/profiles.yml
+
+# Streamlit/runtime
+.streamlit/secrets.toml
+
+# Codex scratch/system state
+work/
+.agents/
+.codex/

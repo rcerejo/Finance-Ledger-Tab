@@ -1,0 +1,27 @@
+name: finance_dbt
+version: "1.0.0"
+config-version: 2
+
+profile: finance_dbt
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  finance_dbt:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+    marts:
+      +materialized: table
+
+seeds:
+  finance_dbt:
+    +quote_columns: false
