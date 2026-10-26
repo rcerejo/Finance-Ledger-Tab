@@ -1,6 +1,6 @@
 # Launch Readiness
 
-Finance Ledger Lab is currently intended for one person running it locally. The current Streamlit app accepts a SQLite path and has no authentication or user-level data isolation. Do not expose it as a shared public service with real bank data.
+Finance Ledger Lab is currently intended for one person running it locally. The Streamlit app accepts PDF/CSV uploads and a SQLite path, but has no authentication or user-level data isolation. Multiple users of one hosted instance would share the same database. Keep it bound to localhost and do not expose it as a shared public service with real bank data.
 
 ## Before a public multi-user launch
 

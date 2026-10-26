@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import unittest
+import sqlite3
+import tempfile
+from contextlib import closing
+from pathlib import Path
 
 import pandas as pd
 
@@ -10,6 +14,7 @@ from forecasting.baseline_forecasts import (
     build_monthly_forecast,
     build_spending_anomalies,
     complete_months,
+    run,
 )
 
 
@@ -42,6 +47,34 @@ class ForecastTests(unittest.TestCase):
         result = complete_months(self.history, ["category", "subcategory"])
         self.assertEqual(result["transaction_month"].tolist(), ["2026-01", "2026-02", "2026-03"])
         self.assertEqual(result.loc[result["transaction_month"] == "2026-02", "spending_amount"].iloc[0], 0.0)
+
+    def test_forecast_tables_are_created_when_history_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "finance.sqlite"
+            with closing(sqlite3.connect(db_path)) as connection:
+                connection.execute(
+                    "CREATE TABLE mart_category_trends "
+                    "(transaction_month TEXT, category TEXT, subcategory TEXT, spending_amount REAL)"
+                )
+                connection.commit()
+
+            counts = run(db_path, self.config)
+
+            with closing(sqlite3.connect(db_path)) as connection:
+                tables = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                anomaly_columns = {
+                    row[1] for row in connection.execute("PRAGMA table_info(spending_anomalies)")
+                }
+
+        self.assertEqual(counts["forecast_monthly_spending"], 0)
+        self.assertEqual(counts["forecast_category_spending"], 0)
+        self.assertIn("spending_anomalies", tables)
+        self.assertIn("variance_ratio", anomaly_columns)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,45 @@ import pandas as pd
 
 
 DEFAULT_DB = Path("outputs") / "finance_raw.sqlite"
+MONTHLY_FORECAST_COLUMNS = [
+    "forecast_month",
+    "metric_name",
+    "forecast_amount",
+    "baseline_amount",
+    "trend_adjustment",
+    "history_months_used",
+    "method",
+    "confidence",
+    "excluded_categories",
+    "created_at",
+]
+CATEGORY_FORECAST_COLUMNS = [
+    "forecast_month",
+    "category",
+    "subcategory",
+    "forecast_amount",
+    "baseline_amount",
+    "trend_adjustment",
+    "history_months_used",
+    "method",
+    "confidence",
+    "excluded_categories",
+    "created_at",
+]
+ANOMALY_COLUMNS = [
+    "transaction_month",
+    "entity_type",
+    "entity_name",
+    "subcategory",
+    "actual_amount",
+    "baseline_amount",
+    "variance_amount",
+    "variance_ratio",
+    "method",
+    "severity",
+    "excluded_categories",
+    "created_at",
+]
 
 
 @dataclass(frozen=True)
@@ -89,7 +129,7 @@ def complete_months(df: pd.DataFrame, group_columns: list[str] | None = None) ->
 def build_monthly_forecast(category: pd.DataFrame, config: ForecastConfig) -> pd.DataFrame:
     history = filter_spend_categories(category, config)
     if history.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=MONTHLY_FORECAST_COLUMNS)
 
     monthly_history = (
         history.groupby("transaction_month", as_index=False)["spending_amount"]
@@ -120,13 +160,13 @@ def build_monthly_forecast(category: pd.DataFrame, config: ForecastConfig) -> pd
                 "created_at": created_at,
             }
         )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=MONTHLY_FORECAST_COLUMNS)
 
 
 def build_category_forecast(category: pd.DataFrame, config: ForecastConfig) -> pd.DataFrame:
     history = filter_spend_categories(category, config)
     if history.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=CATEGORY_FORECAST_COLUMNS)
 
     latest_month = str(history["transaction_month"].max())
     created_at = datetime.now().isoformat(timespec="seconds")
@@ -156,13 +196,13 @@ def build_category_forecast(category: pd.DataFrame, config: ForecastConfig) -> p
                     "created_at": created_at,
                 }
             )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=CATEGORY_FORECAST_COLUMNS)
 
 
 def build_spending_anomalies(category: pd.DataFrame, config: ForecastConfig) -> pd.DataFrame:
     history = filter_spend_categories(category, config)
     if history.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=ANOMALY_COLUMNS)
 
     history = complete_months(history, ["category", "subcategory"])
     latest_month = str(history["transaction_month"].max())
@@ -204,7 +244,7 @@ def build_spending_anomalies(category: pd.DataFrame, config: ForecastConfig) -> 
                 "created_at": created_at,
             }
         )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=ANOMALY_COLUMNS)
 
 
 def write_table(conn: sqlite3.Connection, df: pd.DataFrame, table_name: str) -> None:
@@ -212,7 +252,7 @@ def write_table(conn: sqlite3.Connection, df: pd.DataFrame, table_name: str) -> 
 
 
 def run(db_path: Path, config: ForecastConfig) -> dict[str, int]:
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         category = read_table(conn, "mart_category_trends")
 
         monthly_forecast = build_monthly_forecast(category, config)
@@ -222,6 +262,7 @@ def run(db_path: Path, config: ForecastConfig) -> dict[str, int]:
         write_table(conn, monthly_forecast, "forecast_monthly_spending")
         write_table(conn, category_forecast, "forecast_category_spending")
         write_table(conn, anomalies, "spending_anomalies")
+        conn.commit()
 
     return {
         "forecast_monthly_spending": len(monthly_forecast),
