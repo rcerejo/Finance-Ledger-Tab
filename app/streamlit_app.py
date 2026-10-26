@@ -9,7 +9,7 @@ import streamlit as st
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DB = ROOT / "outputs" / "finance_raw_final.sqlite"
+DEFAULT_DB = ROOT / "outputs" / "finance_raw.sqlite"
 
 
 st.set_page_config(

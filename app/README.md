@@ -9,7 +9,7 @@ streamlit run app/streamlit_app.py
 The app reads the dbt-built SQLite marts from:
 
 ```text
-outputs/finance_raw_final.sqlite
+outputs/finance_raw.sqlite
 ```
 
 Expected tables:
@@ -28,7 +28,7 @@ If data looks stale after ingesting a new statement, run:
 dbt seed --project-dir finance_dbt --profiles-dir finance_dbt
 dbt run --project-dir finance_dbt --profiles-dir finance_dbt
 dbt test --project-dir finance_dbt --profiles-dir finance_dbt
-python forecasting/baseline_forecasts.py --db outputs/finance_raw_final.sqlite
+python forecasting/baseline_forecasts.py --db outputs/finance_raw.sqlite
 ```
 
 Then click **Refresh data** in the app sidebar.
@@ -38,7 +38,7 @@ Then click **Refresh data** in the app sidebar.
 To refresh the baseline forecast tables:
 
 ```powershell
-python forecasting/baseline_forecasts.py --db outputs/finance_raw_final.sqlite
+python forecasting/baseline_forecasts.py --db outputs/finance_raw.sqlite
 ```
 
 This writes:
@@ -50,7 +50,7 @@ This writes:
 The baseline excludes `Transfers`, `Credit Card Payment`, `Income`, and `Investments` by default so the forecast focuses on controllable spending. To include those categories:
 
 ```powershell
-python forecasting/baseline_forecasts.py --db outputs/finance_raw_final.sqlite --include-transfer-spending
+python forecasting/baseline_forecasts.py --db outputs/finance_raw.sqlite --include-transfer-spending
 ```
 
 ## TF-IDF Category Suggestions
@@ -58,7 +58,7 @@ python forecasting/baseline_forecasts.py --db outputs/finance_raw_final.sqlite -
 To generate local ML suggestions for uncategorized rows:
 
 ```powershell
-python ml/tfidf_category_classifier.py --db outputs/finance_raw_final.sqlite
+python ml/tfidf_category_classifier.py --db outputs/finance_raw.sqlite
 ```
 
 This writes:
@@ -80,7 +80,7 @@ ollama pull llama3.1:8b
 Then run:
 
 ```powershell
-python ml/ai_category_suggester.py --db outputs/finance_raw_final.sqlite --model llama3.1:8b
+python ml/ai_category_suggester.py --db outputs/finance_raw.sqlite --model llama3.1:8b
 ```
 
 This writes:

@@ -6,7 +6,7 @@ This script uses Ollama locally and writes suggestions only. It does not update
 dbt categories, raw transactions, or rule seed files.
 
 Usage:
-  python ml/ai_category_suggester.py --db outputs/finance_raw_final.sqlite
+  python ml/ai_category_suggester.py --db outputs/finance_raw.sqlite
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from typing import Any
 import pandas as pd
 
 
-DEFAULT_DB = Path("outputs/finance_raw_final.sqlite")
+DEFAULT_DB = Path("outputs/finance_raw.sqlite")
 DEFAULT_OUTPUT = Path("outputs/ai_category_suggestions.csv")
 DEFAULT_MODEL = "llama3.1:8b"
 DEFAULT_OLLAMA_URL = "http://localhost:11434"

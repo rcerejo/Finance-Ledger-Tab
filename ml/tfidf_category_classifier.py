@@ -9,19 +9,23 @@ It does not overwrite dbt categories or rule files.
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 from pathlib import Path
 
 import joblib
 import pandas as pd
+from sklearn.metrics import classification_report, accuracy_score
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 
 
-DEFAULT_DB = Path("outputs/finance_raw_final.sqlite")
+DEFAULT_DB = Path("outputs/finance_raw.sqlite")
 DEFAULT_MODEL = Path("outputs/tfidf_category_classifier.joblib")
 DEFAULT_SUGGESTIONS = Path("outputs/category_suggestions.csv")
+DEFAULT_EVALUATION = Path("outputs/tfidf_evaluation.json")
 MIN_CONFIDENCE = 0.45
 
 
@@ -82,6 +86,99 @@ def train_model(train_df: pd.DataFrame) -> Pipeline:
     return model
 
 
+def evaluate_model(labeled_df: pd.DataFrame, test_size: float = 0.25) -> dict[str, object]:
+    """Evaluate generalization to held-out merchants, not random transactions."""
+    labeled = labeled_df[labeled_df["category"].notna() & (labeled_df["category"] != "Uncategorized")].copy()
+    labeled["category"] = labeled["category"].astype(str)
+    original_categories = sorted(labeled["category"].astype(str).unique().tolist())
+    merchant = labeled["merchant_name"].fillna("").astype(str).str.strip().str.lower()
+    fallback = labeled["raw_description"].fillna("").astype(str).str.strip().str.lower()
+    labeled["_group"] = merchant.where((merchant != "") & (merchant != "unknown"), fallback)
+    labeled = labeled[labeled["_group"] != ""].copy()
+
+    group_counts = labeled.groupby("category")["_group"].nunique()
+    eligible_categories = group_counts[group_counts >= 2].index.tolist()
+    excluded_categories = sorted(set(original_categories) - set(eligible_categories))
+    labeled = labeled[labeled["category"].isin(eligible_categories)].copy()
+    categories = sorted(labeled["category"].unique().tolist())
+    if len(categories) < 2 or labeled["_group"].nunique() < 4:
+        return {
+            "status": "insufficient_data",
+            "reason": "Need at least two categories with multiple distinct merchants for a merchant-held-out evaluation.",
+            "label_source": "dbt_rule_categories",
+            "split_strategy": "merchant_group_holdout",
+            "excluded_categories": excluded_categories,
+            "rows_evaluated": 0,
+        }
+
+    splitter = GroupShuffleSplit(n_splits=50, test_size=test_size, random_state=42)
+    selected: tuple[list[int], list[int]] | None = None
+    best_test_coverage = -1
+    for train_indexes, test_indexes in splitter.split(labeled, labeled["category"], labeled["_group"]):
+        train_categories = set(labeled.iloc[train_indexes]["category"])
+        test_categories = set(labeled.iloc[test_indexes]["category"])
+        if train_categories != set(categories):
+            continue
+        if len(test_categories) > best_test_coverage:
+            selected = (train_indexes.tolist(), test_indexes.tolist())
+            best_test_coverage = len(test_categories)
+        if test_categories == set(categories):
+            selected = (train_indexes.tolist(), test_indexes.tolist())
+            break
+
+    if selected is None:
+        return {
+            "status": "insufficient_data",
+            "reason": "Could not create a merchant-held-out split with every evaluated category represented in training.",
+            "label_source": "dbt_rule_categories",
+            "split_strategy": "merchant_group_holdout",
+            "excluded_categories": excluded_categories,
+            "rows_evaluated": 0,
+        }
+
+    train_indexes, test_indexes = selected
+    train = labeled.iloc[train_indexes]
+    test = labeled.iloc[test_indexes]
+    model = train_model(train)
+    predictions = model.predict(build_features(test))
+    report = classification_report(
+        test["category"],
+        predictions,
+        labels=categories,
+        output_dict=True,
+        zero_division=0,
+    )
+    train_groups = set(train["_group"])
+    test_groups = set(test["_group"])
+    return {
+        "status": "completed",
+        "label_source": "dbt_rule_categories",
+        "split_strategy": "merchant_group_holdout",
+        "rows_evaluated": int(len(test)),
+        "train_rows": int(len(train)),
+        "test_rows": int(len(test)),
+        "train_merchant_groups": int(len(train_groups)),
+        "test_merchant_groups": int(len(test_groups)),
+        "group_leakage": bool(train_groups & test_groups),
+        "categories": categories,
+        "excluded_categories": excluded_categories,
+        "accuracy": round(float(accuracy_score(test["category"], predictions)), 4),
+        "macro_precision": round(float(report["macro avg"]["precision"]), 4),
+        "macro_recall": round(float(report["macro avg"]["recall"]), 4),
+        "macro_f1": round(float(report["macro avg"]["f1-score"]), 4),
+        "per_category": {
+            category: {
+                "precision": round(float(report[category]["precision"]), 4),
+                "recall": round(float(report[category]["recall"]), 4),
+                "f1": round(float(report[category]["f1-score"]), 4),
+                "support": int(report[category]["support"]),
+            }
+            for category in categories
+        },
+        "caveat": "This measures agreement with dbt rule labels, not independent ground-truth category accuracy.",
+    }
+
+
 def make_suggestions(model: Pipeline, uncategorized_df: pd.DataFrame) -> pd.DataFrame:
     if uncategorized_df.empty:
         return pd.DataFrame(
@@ -123,11 +220,13 @@ def main() -> int:
     parser.add_argument("--db", default=str(DEFAULT_DB), help="SQLite DB path")
     parser.add_argument("--model-out", default=str(DEFAULT_MODEL), help="Output model path")
     parser.add_argument("--suggestions-out", default=str(DEFAULT_SUGGESTIONS), help="Output suggestions CSV path")
+    parser.add_argument("--evaluation-out", default=str(DEFAULT_EVALUATION), help="JSON evaluation report path")
     args = parser.parse_args()
 
     db_path = Path(args.db)
     model_path = Path(args.model_out)
     suggestions_path = Path(args.suggestions_out)
+    evaluation_path = Path(args.evaluation_out)
 
     df = load_transactions(db_path)
     train_df = df[df["category"].notna() & (df["category"] != "Uncategorized")].copy()
@@ -135,6 +234,10 @@ def main() -> int:
 
     if train_df["category"].nunique() < 2:
         raise SystemExit("Need at least two labeled categories to train the classifier.")
+
+    evaluation = evaluate_model(train_df)
+    evaluation_path.parent.mkdir(parents=True, exist_ok=True)
+    evaluation_path.write_text(json.dumps(evaluation, indent=2), encoding="utf-8")
 
     model = train_model(train_df)
     model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,6 +248,11 @@ def main() -> int:
 
     print(f"Training rows: {len(train_df)}")
     print(f"Categories learned: {train_df['category'].nunique()}")
+    if evaluation["status"] == "completed":
+        print(f"Merchant-held-out macro F1 vs dbt labels: {evaluation['macro_f1']}")
+    else:
+        print(f"Evaluation: {evaluation['reason']}")
+    print(f"Evaluation report: {evaluation_path}")
     print(f"Uncategorized rows scored: {len(uncategorized_df)}")
     print(f"Suggestions written to: {suggestions_path}")
     print(f"Suggestions table: ml_category_suggestions")

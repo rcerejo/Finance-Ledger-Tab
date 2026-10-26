@@ -1,15 +1,18 @@
+-- Bank exports often omit stable transaction IDs. This conservative identity
+-- key deduplicates exact matches across overlapping statement files; identical
+-- same-day purchases can still be ambiguous without a bank-provided reference.
 with ranked as (
     select
         *,
         row_number() over (
             partition by
+                bank_name,
                 account_id,
                 transaction_date,
                 coalesce(posting_date, ''),
-                amount,
-                raw_description,
-                source_file
-            order by transaction_id
+                round(amount, 2),
+                upper(trim(raw_description))
+            order by source_file, transaction_id
         ) as exact_duplicate_rank
     from {{ ref('stg_transactions') }}
 )
