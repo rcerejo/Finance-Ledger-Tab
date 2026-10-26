@@ -1,76 +1,64 @@
-# finance_dbt
+# Finance Ledger Lab
 
-Real dbt project for the personal finance pipeline.
+Upload bank statements, normalize transactions into SQLite, build analytics with dbt, and explore results in Streamlit.
 
-This project reads raw ingestion tables from SQLite:
+## Quick start (Windows PowerShell)
 
-- `raw_statement_files`
-- `raw_transactions`
-
-Then builds:
-
-- staging models
-- intermediate dedupe, merchant normalization, and categorization models
-- dashboard-ready marts
-
-## Install
-
-From PowerShell:
+Run these commands from the project root. Python 3.10+ is required.
 
 ```powershell
-cd "C:/Users/rosha/Documents/Codex/2026-07-08/can-you-write-a-script-to/finance_dbt"
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+New-Item -ItemType Directory -Force outputs | Out-Null
+Copy-Item finance_dbt\profiles.example.yml finance_dbt\profiles.yml
+$env:FINANCE_DB_PATH = (Join-Path (Get-Location) "outputs/finance_raw.sqlite")
+$env:FINANCE_DB_DIR = (Join-Path (Get-Location) "outputs")
 ```
 
-## Configure Profile
+If PowerShell blocks virtual-environment activation, run `Set-ExecutionPolicy -Scope Process RemoteSigned` and activate again.
 
-Copy `profiles.example.yml` into your dbt profiles folder:
+## Process a statement
+
+Replace the example path with a statement PDF or CSV you trust. The parser writes a CSV preview and loads parsed transactions into the local SQLite database.
 
 ```powershell
-mkdir "$HOME/.dbt" -Force
-copy ".\profiles.example.yml" "$HOME/.dbt\profiles.yml"
+python ingestion/statement_parser.py "C:\path\to\statement.pdf" --ingest --db outputs/finance_raw.sqlite -o outputs/transactions.csv
 ```
 
-The example points to:
-
-```text
-C:/Users/rosha/Documents/Codex/2026-07-08/can-you-write-a-script-to/outputs/finance_raw_final.sqlite
-```
-
-## Run
+Build and test the dbt models:
 
 ```powershell
-dbt debug
-dbt seed
-dbt run
-dbt test
+dbt seed --project-dir finance_dbt --profiles-dir finance_dbt
+dbt run --project-dir finance_dbt --profiles-dir finance_dbt
+dbt test --project-dir finance_dbt --profiles-dir finance_dbt
 ```
 
-## Model Flow
+Optionally refresh forecasts, then open the dashboard:
 
-```text
-raw_statement_files
-raw_transactions
-        ↓
-stg_statement_files
-stg_transactions
-        ↓
-int_deduped_transactions
-int_merchant_normalized
-int_categorized_transactions
-        ↓
-fct_transactions
-mart_monthly_spending
-mart_category_trends
-mart_merchant_spending
+```powershell
+python forecasting/baseline_forecasts.py --db outputs/finance_raw.sqlite
+streamlit run app/streamlit_app.py
 ```
 
-## Categorization Method
+## Optional local AI
 
-Categorization is rule-based for now:
+The parser can use a locally running Ollama model as a fallback for unfamiliar text-based PDF layouts. Install Ollama and pull a model first:
 
-1. `merchant_rules.csv` normalizes raw descriptions to merchants.
-2. `category_rules.csv` maps merchants/descriptions/types to categories.
-3. Unmatched transactions stay `Uncategorized`.
+```powershell
+ollama pull llama3.1:8b
+python ingestion/statement_parser.py "C:\path\to\statement.pdf" -o outputs/transactions.csv --ai-fallback --ai-model llama3.1:8b
+```
 
-This is intentional. ML should come later as a suggestion layer after you have enough reviewed/labeled history.
+AI and TF-IDF category outputs are suggestions for review, not automatic replacements for dbt categories. Scanned/image-only PDFs need OCR. Review parser output and validation before relying on it; bank formats vary and support is not universal.
+
+## Project map
+
+- `ingestion/`: statement parsing, validation, and SQLite loading
+- `finance_dbt/`: canonical dbt project, mapping seeds, tests, and marts
+- `ml/`: TF-IDF and optional Ollama category suggestions
+- `forecasting/`: baseline forecasts and anomaly calculations
+- `app/`: Streamlit dashboard
+- `outputs/`: local database and generated files (ignored by Git)
+
+The database contains sensitive financial data and is intentionally kept out of version control. This is a local single-user project; it is not configured for public multi-user hosting or account isolation.

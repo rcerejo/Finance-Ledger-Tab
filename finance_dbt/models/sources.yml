@@ -1,0 +1,40 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Raw ingestion tables loaded by bank_statement_parser.py.
+    schema: main
+    tables:
+      - name: raw_statement_files
+        description: One row per ingested statement file.
+        columns:
+          - name: file_id
+            tests:
+              - not_null
+              - unique
+          - name: file_hash
+            tests:
+              - not_null
+              - unique
+          - name: parse_status
+            tests:
+              - not_null
+          - name: validation_status
+            tests:
+              - not_null
+      - name: raw_transactions
+        description: Raw parsed transaction rows from statement files.
+        columns:
+          - name: transaction_id
+            tests:
+              - not_null
+              - unique
+          - name: file_id
+            tests:
+              - not_null
+          - name: transaction_date
+            tests:
+              - not_null
+          - name: amount
+            tests:
+              - not_null

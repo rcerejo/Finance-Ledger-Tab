@@ -1,0 +1,32 @@
+version: 2
+
+models:
+  - name: int_deduped_transactions
+    description: Exact duplicate handling after staging.
+    columns:
+      - name: transaction_id
+        tests:
+          - not_null
+          - unique
+
+  - name: int_merchant_normalized
+    description: Applies merchant normalization seed rules.
+    columns:
+      - name: transaction_id
+        tests:
+          - not_null
+          - unique
+      - name: merchant_name
+        tests:
+          - not_null
+
+  - name: int_categorized_transactions
+    description: Applies category seed rules after merchant normalization.
+    columns:
+      - name: transaction_id
+        tests:
+          - not_null
+          - unique
+      - name: category
+        tests:
+          - not_null
