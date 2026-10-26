@@ -1,0 +1,8 @@
+pypdf
+pandas
+scikit-learn
+joblib
+plotly
+streamlit
+dbt-core
+dbt-sqlite

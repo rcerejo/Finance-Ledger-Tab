@@ -57,6 +57,25 @@ def load_optional_table(db_path: Path, table_name: str) -> pd.DataFrame:
         return pd.read_sql_query(f"select * from {table_name}", conn)
 
 
+def load_forecast_tables(db_path: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    monthly_forecast = load_optional_table(db_path, "forecast_monthly_spending")
+    category_forecast = load_optional_table(db_path, "forecast_category_spending")
+    anomalies = load_optional_table(db_path, "spending_anomalies")
+
+    for frame in (monthly_forecast, category_forecast, anomalies):
+        for column in (
+            "forecast_amount",
+            "baseline_amount",
+            "trend_adjustment",
+            "actual_amount",
+            "variance_amount",
+            "variance_ratio",
+        ):
+            if column in frame.columns:
+                frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return monthly_forecast, category_forecast, anomalies
+
+
 def apply_filters(df: pd.DataFrame, months: list[str], categories: list[str], accounts: list[str]) -> pd.DataFrame:
     filtered = df.copy()
     if months:
@@ -126,8 +145,15 @@ def main() -> None:
         category_f = category_f[category_f["category"].isin(selected_categories)]
         merchant_f = merchant_f[merchant_f["category"].isin(selected_categories)]
 
-    tab_monthly, tab_category, tab_merchant, tab_suggestions, tab_transactions = st.tabs(
-        ["Monthly Spending", "Category Trends", "Merchant Insights", "ML Suggestions", "Transactions"]
+    tab_monthly, tab_category, tab_merchant, tab_forecast, tab_suggestions, tab_transactions = st.tabs(
+        [
+            "Monthly Spending",
+            "Category Trends",
+            "Merchant Insights",
+            "Forecasting",
+            "ML Suggestions",
+            "Transactions",
+        ]
     )
 
     with tab_monthly:
@@ -196,29 +222,162 @@ def main() -> None:
         st.plotly_chart(fig, use_container_width=True)
         st.dataframe(merchant_totals, use_container_width=True, hide_index=True)
 
-    with tab_suggestions:
-        st.subheader("TF-IDF Category Suggestions")
-        suggestions = load_optional_table(db_path, "ml_category_suggestions")
-        if suggestions.empty:
-            st.info("No ML suggestions found. Run ml/tfidf_category_classifier.py to generate them.")
+    with tab_forecast:
+        st.subheader("Baseline Forecast")
+        monthly_forecast, category_forecast, anomalies = load_forecast_tables(db_path)
+        if monthly_forecast.empty:
+            st.info("No forecast tables found. Run forecasting/baseline_forecasts.py to generate them.")
         else:
-            suggestions["suggestion_confidence"] = pd.to_numeric(
-                suggestions["suggestion_confidence"], errors="coerce"
-            )
-            st.metric("Suggestions", f"{len(suggestions):,}")
-            fig = px.histogram(
-                suggestions,
-                x="suggestion_confidence",
-                color="suggested_category",
-                nbins=10,
-                labels={"suggestion_confidence": "Confidence"},
+            next_month = monthly_forecast.sort_values("forecast_month").iloc[0]
+            f1, f2, f3 = st.columns(3)
+            f1.metric("Next Month Forecast", currency(float(next_month["forecast_amount"])))
+            f2.metric("Baseline", currency(float(next_month["baseline_amount"])))
+            f3.metric("Confidence", str(next_month["confidence"]).replace("_", " ").title())
+
+            forecast_chart = monthly_forecast.sort_values("forecast_month")
+            fig = px.bar(
+                forecast_chart,
+                x="forecast_month",
+                y="forecast_amount",
+                color="confidence",
+                text_auto=".2s",
+                labels={"forecast_month": "Forecast Month", "forecast_amount": "Forecast Spend"},
             )
             st.plotly_chart(fig, use_container_width=True)
             st.dataframe(
-                suggestions.sort_values("suggestion_confidence", ascending=False),
+                forecast_chart[
+                    [
+                        "forecast_month",
+                        "forecast_amount",
+                        "baseline_amount",
+                        "trend_adjustment",
+                        "history_months_used",
+                        "confidence",
+                        "excluded_categories",
+                    ]
+                ],
                 use_container_width=True,
                 hide_index=True,
             )
+
+        if not category_forecast.empty:
+            st.subheader("Category Forecast")
+            selected_forecast_month = st.selectbox(
+                "Forecast month",
+                sorted(category_forecast["forecast_month"].dropna().unique().tolist()),
+            )
+            category_month = category_forecast[
+                category_forecast["forecast_month"] == selected_forecast_month
+            ].sort_values("forecast_amount", ascending=False)
+            fig = px.bar(
+                category_month.head(15).sort_values("forecast_amount"),
+                x="forecast_amount",
+                y="category",
+                color="confidence",
+                orientation="h",
+                labels={"forecast_amount": "Forecast Spend", "category": "Category"},
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(
+                category_month[
+                    [
+                        "forecast_month",
+                        "category",
+                        "subcategory",
+                        "forecast_amount",
+                        "baseline_amount",
+                        "trend_adjustment",
+                        "history_months_used",
+                        "confidence",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        st.subheader("Spending Anomalies")
+        if anomalies.empty:
+            st.success("No current anomalies found with the active baseline thresholds.")
+        else:
+            st.dataframe(
+                anomalies.sort_values(["severity", "variance_ratio"], ascending=[True, False]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with tab_suggestions:
+        tfidf_tab, ai_tab = st.tabs(["TF-IDF", "AI Suggestions"])
+
+        with tfidf_tab:
+            st.subheader("TF-IDF Category Suggestions")
+            suggestions = load_optional_table(db_path, "ml_category_suggestions")
+            if suggestions.empty:
+                st.info("No TF-IDF suggestions found. Run ml/tfidf_category_classifier.py to generate them.")
+            else:
+                suggestions["suggestion_confidence"] = pd.to_numeric(
+                    suggestions["suggestion_confidence"], errors="coerce"
+                )
+                st.metric("Suggestions", f"{len(suggestions):,}")
+                fig = px.histogram(
+                    suggestions,
+                    x="suggestion_confidence",
+                    color="suggested_category",
+                    nbins=10,
+                    labels={"suggestion_confidence": "Confidence"},
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(
+                    suggestions.sort_values("suggestion_confidence", ascending=False),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        with ai_tab:
+            st.subheader("AI Category Suggestions")
+            ai_suggestions = load_optional_table(db_path, "ai_category_suggestions")
+            if ai_suggestions.empty:
+                st.info("No AI suggestions found. Run ml/ai_category_suggester.py with Ollama running.")
+            else:
+                ai_suggestions["suggestion_confidence"] = pd.to_numeric(
+                    ai_suggestions["suggestion_confidence"], errors="coerce"
+                )
+                a1, a2, a3 = st.columns(3)
+                a1.metric("Suggestions", f"{len(ai_suggestions):,}")
+                a2.metric(
+                    "Review Ready",
+                    f"{int((ai_suggestions['suggestion_status'] == 'review').sum()):,}",
+                )
+                a3.metric(
+                    "Avg Confidence",
+                    f"{float(ai_suggestions['suggestion_confidence'].mean()):.2f}",
+                )
+                fig = px.histogram(
+                    ai_suggestions,
+                    x="suggestion_confidence",
+                    color="suggested_category",
+                    nbins=10,
+                    labels={"suggestion_confidence": "Confidence"},
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                display_columns = [
+                    "transaction_date",
+                    "bank_name",
+                    "merchant_name",
+                    "raw_description",
+                    "amount",
+                    "suggested_merchant_name",
+                    "suggested_category",
+                    "suggested_subcategory",
+                    "suggestion_confidence",
+                    "suggestion_status",
+                    "suggestion_reason",
+                    "model_name",
+                ]
+                st.dataframe(
+                    ai_suggestions.sort_values("suggestion_confidence", ascending=False)[display_columns],
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
     with tab_transactions:
         st.subheader("Search / Filter Transactions")

@@ -14,6 +14,7 @@ Usage:
   python bank_statement_parser.py "C:\\path\\statement.pdf" -o transactions.csv
   python bank_statement_parser.py "C:\\path\\statements_folder" -o transactions.csv
   python bank_statement_parser.py statement.pdf --debug-text debug
+  python bank_statement_parser.py unknown_bank.pdf --ai-fallback --ai-model llama3.1:8b
   python bank_statement_parser.py statement1.pdf statement2.pdf --json
 """
 
@@ -26,12 +27,14 @@ import json
 import re
 import sqlite3
 import sys
+import urllib.error
+import urllib.request
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 try:
     from pypdf import PdfReader
@@ -42,6 +45,10 @@ except ImportError as exc:  # pragma: no cover
 
 
 DATE_MDY = re.compile(r"\b(?P<m>\d{1,2})/(?P<d>\d{1,2})(?:/(?P<y>\d{2,4}))?\b")
+DATE_MONTH_NAME = re.compile(
+    r"\b(?P<mon>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(?P<d>\d{1,2})(?:,\s*(?P<y>\d{4}))?\b",
+    re.I,
+)
 MONEY = re.compile(r"(?<![\w.])(?:-\$?\d{1,3}|\$?\s*\d{1,3})(?:,\d{3})*(?:\.\d{2})")
 EXPORT_FIELDNAMES = [
     "transaction_id",
@@ -58,7 +65,7 @@ EXPORT_FIELDNAMES = [
     "created_at",
 ]
 PARSER_NAME = "bank_statement_parser"
-PARSER_VERSION = "0.2.0"
+PARSER_VERSION = "0.3.0"
 
 
 @dataclass
@@ -204,12 +211,23 @@ def extract_pages(pdf_path: Path) -> list[str]:
     return pages
 
 
-def parse_statement(path: Path) -> ParsedStatement:
+def parse_statement(
+    path: Path,
+    *,
+    ai_fallback: bool = False,
+    ai_only: bool = False,
+    ai_model: str = "llama3.1:8b",
+    ai_url: str = "http://localhost:11434",
+) -> ParsedStatement:
     file_hash = file_sha256(path)
     if path.suffix.lower() == ".pdf":
         pages = extract_pages(path)
         meta = infer_meta("\n".join(pages))
-        rows = parse_pages(path, pages, meta)
+        rows = [] if ai_only else parse_pages(path, pages, meta)
+        if ai_only or should_use_ai_fallback(rows, meta, ai_fallback):
+            ai_rows = parse_with_llm(path, pages, meta, ai_model=ai_model, ai_url=ai_url)
+            if ai_rows:
+                rows = ai_rows
     elif path.suffix.lower() == ".csv":
         rows, meta = parse_csv_statement(path)
     else:
@@ -227,6 +245,16 @@ def parse_statement(path: Path) -> ParsedStatement:
     )
 
 
+def should_use_ai_fallback(rows: list[Transaction], meta: StatementMeta, enabled: bool) -> bool:
+    if not enabled:
+        return False
+    if not rows:
+        return True
+    if meta.bank == "Unknown":
+        return True
+    return any(row.confidence == "low" for row in rows)
+
+
 def infer_meta(text: str) -> StatementMeta:
     compact = squash(text)
     lower = compact.lower()
@@ -236,6 +264,8 @@ def infer_meta(text: str) -> StatementMeta:
         meta.bank = "Alliant Credit Union"
     elif "bank of america" in lower or "bankofamerica.com" in lower:
         meta.bank = "Bank of America"
+    elif "capitalone.com" in lower or "capital one" in lower:
+        meta.bank = "Capital One"
     else:
         meta.bank = "Unknown"
 
@@ -244,6 +274,7 @@ def infer_meta(text: str) -> StatementMeta:
         r"AccountNumber\s+StatementPeriod\s+Page\s+([0-9]{4,})",
         r"AccountNumber\s*([0-9]{4,})",
         r"Account Number:\s*([0-9 ][0-9 ]{6,})",
+        r"(?:Debit Card|Savings|Spending)\s*-\s*([0-9]{4,})",
     ]
     for pattern in account_patterns:
         match = re.search(pattern, compact, re.I)
@@ -254,6 +285,7 @@ def infer_meta(text: str) -> StatementMeta:
     period_patterns = [
         r"(\d{1,2}/\d{1,2}/\d{2,4})\s+thru\s+(\d{1,2}/\d{1,2}/\d{2,4})",
         r"([A-Z][a-z]+ \d{1,2})\s*-\s*([A-Z][a-z]+ \d{1,2}, \d{4})",
+        r"([A-Z][a-z]{2,8} \d{1,2})\s*-\s*([A-Z][a-z]{2,8} \d{1,2}, \d{4})",
     ]
     for pattern in period_patterns:
         match = re.search(pattern, compact)
@@ -276,6 +308,21 @@ def year_from_meta(meta: StatementMeta) -> int | None:
 def normalize_date(raw: str, meta: StatementMeta) -> str:
     match = DATE_MDY.search(raw)
     if not match:
+        month_match = DATE_MONTH_NAME.search(raw)
+        if month_match:
+            month = datetime.strptime(month_match.group("mon")[:3].title(), "%b").month
+            day = int(month_match.group("d"))
+            raw_year = month_match.group("y")
+            year = int(raw_year) if raw_year else (year_from_meta(meta) or date.today().year)
+            try:
+                return date(year, month, day).isoformat()
+            except ValueError:
+                return ""
+        for fmt in ("%Y-%m-%d", "%B %d, %Y", "%b %d, %Y"):
+            try:
+                return datetime.strptime(raw.strip(), fmt).date().isoformat()
+            except ValueError:
+                continue
         return ""
     month = int(match.group("m"))
     day = int(match.group("d"))
@@ -292,6 +339,235 @@ def normalize_date(raw: str, meta: StatementMeta) -> str:
         return raw
 
 
+def parse_period_date(raw: str, meta: StatementMeta) -> str:
+    normalized = normalize_date(raw, meta)
+    if normalized:
+        return normalized
+
+    compact = squash(raw)
+    end_year = year_from_meta(meta)
+    if not end_year:
+        return ""
+    for fmt in ("%B %d", "%b %d"):
+        try:
+            parsed = datetime.strptime(compact, fmt)
+            return date(end_year, parsed.month, parsed.day).isoformat()
+        except ValueError:
+            continue
+    return ""
+
+
+def date_in_statement_period(transaction_date: str, meta: StatementMeta) -> bool:
+    if not transaction_date:
+        return False
+    start = parse_period_date(meta.period_start, meta)
+    end = parse_period_date(meta.period_end, meta)
+    if not start or not end:
+        return True
+    return start <= transaction_date <= end
+
+
+def llm_prompt(text: str, meta: StatementMeta, *, page_number: int, account_name: str) -> str:
+    return f"""
+You extract bank statement transactions into strict JSON.
+
+Return only valid JSON with this shape:
+{{
+  "bank_name": "string",
+  "account_id": "string",
+  "statement_period_start": "YYYY-MM-DD or empty string",
+  "statement_period_end": "YYYY-MM-DD or empty string",
+  "transactions": [
+    {{
+      "transaction_date": "YYYY-MM-DD",
+      "posting_date": "YYYY-MM-DD or empty string",
+      "description": "original transaction description",
+      "amount": "-12.34 for debits, 12.34 for credits",
+      "transaction_type": "debit or credit",
+      "account_name": "account section name or empty string",
+      "balance": "optional numeric string or empty string",
+      "confidence": "low, medium, or high"
+    }}
+  ]
+}}
+
+Rules:
+- Do not invent transactions.
+- Do not include beginning balance, ending balance, subtotals, summaries, APR, fees tables without transaction rows, or disclosure text.
+- Preserve the source description text.
+- Use negative amounts for money leaving the account and positive amounts for money entering the account.
+- If a date or amount is uncertain, omit that transaction.
+- Extract transactions only from the supplied page; do not repeat transactions from other pages.
+- Ignore opening/closing balances and summary tables.
+
+Known parser metadata:
+- bank_name: {meta.bank}
+- account_id: {meta.account}
+- statement_period_start: {meta.period_start}
+- statement_period_end: {meta.period_end}
+- current_account_section: {account_name}
+- source_page_number: {page_number}
+
+Page text:
+```text
+{text}
+```
+""".strip()
+
+
+def extract_json_object(raw: str) -> dict[str, Any]:
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?", "", raw).strip()
+        raw = re.sub(r"```$", "", raw).strip()
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("LLM response did not contain a JSON object.")
+    return json.loads(raw[start : end + 1])
+
+
+def call_ollama(prompt: str, *, ai_model: str, ai_url: str) -> dict[str, Any]:
+    endpoint = ai_url.rstrip("/") + "/api/generate"
+    payload = {
+        "model": ai_model,
+        "prompt": prompt,
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0, "num_predict": 4096},
+    }
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Could not reach Ollama at {endpoint}. Start Ollama and pull the model first."
+        ) from exc
+    return extract_json_object(str(data.get("response", "")))
+
+
+def transaction_from_llm(
+    item: dict[str, Any],
+    *,
+    pdf_path: Path,
+    row_number: int,
+    meta: StatementMeta,
+    llm_bank: str,
+    llm_account: str,
+    page_number: int,
+    default_account_name: str,
+) -> Transaction | None:
+    tx_date = normalize_date(str(item.get("transaction_date", "")), meta)
+    posting_date = normalize_date(str(item.get("posting_date", "")), meta)
+    description = squash(str(item.get("description", "")))
+    amount = parse_amount(str(item.get("amount", "")))
+    tx_type = squash(str(item.get("transaction_type", ""))).lower()
+    balance = parse_amount(str(item.get("balance", ""))) if str(item.get("balance", "")).strip() else None
+    confidence = squash(str(item.get("confidence", "medium"))).lower()
+    account_name = squash(str(item.get("account_name", ""))) or default_account_name
+
+    if amount is not None and tx_type == "debit" and amount > 0:
+        amount *= Decimal("-1")
+    if amount is not None and tx_type == "credit" and amount < 0:
+        amount *= Decimal("-1")
+
+    if not tx_date or not description or amount is None:
+        return None
+    if not date_in_statement_period(tx_date, meta):
+        return None
+    if confidence not in {"low", "medium", "high"}:
+        confidence = "medium"
+
+    return Transaction(
+        source_file=str(pdf_path),
+        source_row_number=row_number,
+        page_number=page_number,
+        source_method="llm_structured_extraction",
+        confidence=f"{confidence}_ai_review",
+        bank=llm_bank or meta.bank or "Unknown",
+        account=llm_account or meta.account,
+        account_name=account_name,
+        transaction_date=tx_date,
+        posting_date=posting_date,
+        description=description,
+        amount=amount_to_str(amount),
+        balance=amount_to_str(balance),
+        raw_text=json.dumps(item, ensure_ascii=False),
+    )
+
+
+def parse_with_llm(
+    pdf_path: Path,
+    pages: list[str],
+    meta: StatementMeta,
+    *,
+    ai_model: str,
+    ai_url: str,
+) -> list[Transaction]:
+    if not any(squash(page) for page in pages):
+        raise RuntimeError("PDF has no extractable text. OCR is required before AI parsing.")
+    rows: list[Transaction] = []
+    current_account_name = ""
+    account_header = re.compile(r"^\s*(Debit Card|Savings|Spending)\s*-\s*[0-9]{4,}\s*$", re.I)
+
+    for page_number, page_text in enumerate(pages, start=1):
+        if not squash(page_text):
+            continue
+        for line in page_text.splitlines():
+            header = account_header.match(line)
+            if header:
+                current_account_name = squash(header.group(1))
+        print(f"AI parsing page {page_number}/{len(pages)}...", file=sys.stderr, flush=True)
+        response = call_ollama(
+            llm_prompt(
+                page_text,
+                meta,
+                page_number=page_number,
+                account_name=current_account_name,
+            ),
+            ai_model=ai_model,
+            ai_url=ai_url,
+        )
+        llm_bank = squash(str(response.get("bank_name", "")))
+        llm_account = squash(str(response.get("account_id", "")))
+        if response.get("statement_period_start"):
+            meta.period_start = str(response["statement_period_start"])
+        if response.get("statement_period_end"):
+            meta.period_end = str(response["statement_period_end"])
+        if llm_bank and meta.bank == "Unknown":
+            meta.bank = llm_bank
+        if llm_account and not meta.account:
+            meta.account = llm_account
+
+        transactions = response.get("transactions", [])
+        if not isinstance(transactions, list):
+            raise ValueError(f"LLM response for page {page_number} did not include a transactions list.")
+        for item in transactions:
+            if not isinstance(item, dict):
+                continue
+            tx = transaction_from_llm(
+                item,
+                pdf_path=pdf_path,
+                row_number=len(rows) + 1,
+                meta=meta,
+                llm_bank=llm_bank,
+                llm_account=llm_account,
+                page_number=page_number,
+                default_account_name=current_account_name,
+            )
+            if tx:
+                rows.append(tx)
+    if not rows:
+        raise ValueError("AI parsing returned no valid transaction rows. Check the PDF text and Ollama output.")
+    return rows
+
+
 def parse_pdf(pdf_path: Path) -> list[Transaction]:
     pages = extract_pages(pdf_path)
     text = "\n".join(pages)
@@ -304,6 +580,8 @@ def parse_pages(pdf_path: Path, pages: list[str], meta: StatementMeta) -> list[T
         return parse_alliant(pdf_path, pages, meta)
     if meta.bank == "Bank of America":
         return parse_bank_of_america(pdf_path, pages, meta)
+    if meta.bank == "Capital One":
+        return parse_capital_one(pdf_path, pages, meta)
     return parse_generic(pdf_path, pages, meta)
 
 
@@ -432,6 +710,82 @@ def parse_bank_of_america(pdf_path: Path, pages: list[str], meta: StatementMeta)
                     raw_text=squash(line),
                 )
             )
+
+    return transactions
+
+
+def parse_capital_one(pdf_path: Path, pages: list[str], meta: StatementMeta) -> list[Transaction]:
+    transactions: list[Transaction] = []
+    account_name = ""
+    account_number = meta.account
+    last_tx: Transaction | None = None
+    account_re = re.compile(r"^\s*(Debit Card|Savings|Spending)\s*-\s*([0-9]{4,})\s*$", re.I)
+    row_re = re.compile(
+        r"^\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2})\s+"
+        r"(.+?)\s+"
+        r"(Credit|Debit)\s+"
+        r"([+-])\s*\$?([0-9,]+\.\d{2})\s+"
+        r"\$?([0-9,]+\.\d{2})\s*$",
+        re.I,
+    )
+
+    for page_number, page_text in enumerate(pages, start=1):
+        for raw_line in page_text.splitlines():
+            line = clean_text(raw_line.rstrip())
+            if not line.strip():
+                continue
+
+            account = account_re.match(line)
+            if account:
+                account_name = squash(account.group(1))
+                account_number = account.group(2)
+                last_tx = None
+                continue
+
+            row = row_re.match(line)
+            if row:
+                description = clean_description(row.group(2))
+                if description.upper() in {"OPENING BALANCE", "CLOSING BALANCE"}:
+                    last_tx = None
+                    continue
+
+                amount = parse_amount(row.group(5))
+                balance = parse_amount(row.group(6))
+                if amount is None:
+                    last_tx = None
+                    continue
+                if row.group(4) == "-":
+                    amount *= Decimal("-1")
+
+                tx = Transaction(
+                    source_file=str(pdf_path),
+                    source_row_number=len(transactions) + 1,
+                    page_number=page_number,
+                    source_method="capital_one_known_layout",
+                    confidence="high",
+                    bank=meta.bank,
+                    account=account_number,
+                    account_name=account_name,
+                    transaction_date=normalize_date(row.group(1), meta),
+                    posting_date="",
+                    description=description,
+                    amount=amount_to_str(amount),
+                    balance=amount_to_str(balance),
+                    raw_text=squash(line),
+                )
+                transactions.append(tx)
+                last_tx = tx
+                continue
+
+            if last_tx and not re.search(
+                r"\b(Page \d+ of|capitalone\.com|STATEMENT PERIOD|DATE\s+DESCRIPTION|APY|DAYS IN STATEMENT|Account Summary)\b",
+                line,
+                re.I,
+            ):
+                extra = squash(line)
+                if extra and not DATE_MONTH_NAME.match(extra):
+                    last_tx.description = squash(f"{last_tx.description} {extra}")
+                    last_tx.raw_text = squash(f"{last_tx.raw_text} {extra}")
 
     return transactions
 
@@ -812,6 +1166,26 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Do not write the .validation.txt report next to the CSV",
     )
+    parser.add_argument(
+        "--ai-fallback",
+        action="store_true",
+        help="Use local Ollama LLM extraction only when the rule parser has low/no confidence",
+    )
+    parser.add_argument(
+        "--ai-only",
+        action="store_true",
+        help="Skip rule parsers and use local Ollama LLM structured extraction for PDFs",
+    )
+    parser.add_argument(
+        "--ai-model",
+        default="llama3.1:8b",
+        help="Ollama model to use with --ai-fallback or --ai-only",
+    )
+    parser.add_argument(
+        "--ai-url",
+        default="http://localhost:11434",
+        help="Ollama server URL to use with --ai-fallback or --ai-only",
+    )
     args = parser.parse_args(argv)
 
     if not args.paths:
@@ -825,6 +1199,8 @@ def main(argv: list[str] | None = None) -> int:
             r'  python bank_statement_parser.py statement.pdf --debug-text debug'
             "\n"
             r'  python bank_statement_parser.py statement.pdf --ingest --db finance_raw.sqlite'
+            "\n"
+            r'  python bank_statement_parser.py unknown_bank.pdf --ai-fallback --ai-model llama3.1:8b'
         )
         return 2
 
@@ -834,12 +1210,20 @@ def main(argv: list[str] | None = None) -> int:
 
     statements: list[ParsedStatement] = []
     rows: list[Transaction] = []
+    failures = 0
     for statement_file in files:
         try:
-            statement = parse_statement(statement_file)
+            statement = parse_statement(
+                statement_file,
+                ai_fallback=args.ai_fallback,
+                ai_only=args.ai_only,
+                ai_model=args.ai_model,
+                ai_url=args.ai_url,
+            )
             statements.append(statement)
             rows.extend(statement.rows)
         except Exception as exc:
+            failures += 1
             print(f"Warning: failed to parse {statement_file}: {exc}", file=sys.stderr)
 
     created_at = datetime.now().isoformat(timespec="seconds")
@@ -855,7 +1239,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote {len(rows)} transactions to {output}")
         if not args.no_validation:
             write_validation_report(rows, output)
-    return 0
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
