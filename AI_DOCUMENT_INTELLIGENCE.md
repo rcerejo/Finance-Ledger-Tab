@@ -33,4 +33,4 @@ Check the generated transactions and validation report before using the data dow
 
 ## Evaluation
 
-Measure extraction against manually reviewed examples. Track field-level accuracy for transaction date, posting date, description/merchant, amount, debit/credit direction, and category. Keep evaluation statements and expected labels private; do not commit real financial documents.
+Measure extraction against manually reviewed examples. Track field-level accuracy for transaction date, posting date, description/merchant, amount, and debit/credit direction. Category suggestions need a separately reviewed label set. Keep evaluation statements and expected labels private; do not commit real financial documents.

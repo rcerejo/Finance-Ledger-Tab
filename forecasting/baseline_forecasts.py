@@ -7,7 +7,7 @@ heavy model. With only a few months of history, rolling averages and trend
 checks are easier to validate and explain.
 
 Usage:
-  python forecasting/baseline_forecasts.py --db outputs/finance_raw_final.sqlite
+  python forecasting/baseline_forecasts.py --db outputs/finance_raw.sqlite
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from pathlib import Path
 import pandas as pd
 
 
-DEFAULT_DB = Path("outputs") / "finance_raw_final.sqlite"
+DEFAULT_DB = Path("outputs") / "finance_raw.sqlite"
 
 
 @dataclass(frozen=True)
@@ -59,6 +59,33 @@ def filter_spend_categories(category: pd.DataFrame, config: ForecastConfig) -> p
     return history[~history["category"].isin(config.excluded_categories)].copy()
 
 
+def complete_months(df: pd.DataFrame, group_columns: list[str] | None = None) -> pd.DataFrame:
+    """Fill missing calendar months with zero spending, without backfilling before first activity."""
+    if df.empty:
+        return df.copy()
+
+    latest_month = pd.Period(df["transaction_month"].max(), freq="M")
+    grouping = group_columns or []
+    groups = df.groupby(grouping, dropna=False, sort=False) if grouping else [((), df)]
+    completed: list[pd.DataFrame] = []
+    for key, group in groups:
+        group = group.copy()
+        group["transaction_month"] = group["transaction_month"].astype(str)
+        group = group.drop_duplicates("transaction_month", keep="last")
+        months = pd.period_range(
+            start=pd.Period(group["transaction_month"].min(), freq="M"),
+            end=latest_month,
+            freq="M",
+        ).astype(str)
+        indexed = group.set_index("transaction_month").reindex(months)
+        indexed.index.name = "transaction_month"
+        indexed["spending_amount"] = indexed["spending_amount"].fillna(0.0)
+        for column, value in zip(grouping, key if isinstance(key, tuple) else (key,)):
+            indexed[column] = value
+        completed.append(indexed.reset_index())
+    return pd.concat(completed, ignore_index=True)
+
+
 def build_monthly_forecast(category: pd.DataFrame, config: ForecastConfig) -> pd.DataFrame:
     history = filter_spend_categories(category, config)
     if history.empty:
@@ -69,6 +96,7 @@ def build_monthly_forecast(category: pd.DataFrame, config: ForecastConfig) -> pd
         .sum()
         .sort_values("transaction_month")
     )
+    monthly_history = complete_months(monthly_history)
     recent = monthly_history.tail(config.lookback_months)
     baseline = float(recent["spending_amount"].mean())
     slope = float(recent["spending_amount"].diff().dropna().mean()) if len(recent) > 1 else 0.0
@@ -104,6 +132,7 @@ def build_category_forecast(category: pd.DataFrame, config: ForecastConfig) -> p
     created_at = datetime.now().isoformat(timespec="seconds")
     rows: list[dict[str, object]] = []
 
+    history = complete_months(history, ["category", "subcategory"])
     for (category_name, subcategory), group in history.groupby(["category", "subcategory"], dropna=False):
         group = group.sort_values("transaction_month").tail(config.lookback_months)
         if group.empty:
@@ -135,6 +164,7 @@ def build_spending_anomalies(category: pd.DataFrame, config: ForecastConfig) -> 
     if history.empty:
         return pd.DataFrame()
 
+    history = complete_months(history, ["category", "subcategory"])
     latest_month = str(history["transaction_month"].max())
     created_at = datetime.now().isoformat(timespec="seconds")
     rows: list[dict[str, object]] = []
