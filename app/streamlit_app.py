@@ -1,15 +1,30 @@
 from __future__ import annotations
 
 import sqlite3
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from forecasting.baseline_forecasts import ForecastConfig, run as run_forecasts
+from ingestion.statement_parser import ingest_statements
+from ingestion.upload_workflow import (
+    MAX_UPLOAD_BYTES,
+    UploadPreview,
+    existing_statement_hashes,
+    parse_uploaded_statement,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = ROOT / "outputs" / "finance_raw.sqlite"
+MAX_TOTAL_UPLOAD_BYTES = 50 * 1024 * 1024
 
 
 st.set_page_config(
@@ -87,18 +102,189 @@ def apply_filters(df: pd.DataFrame, months: list[str], categories: list[str], ac
     return filtered
 
 
+def rebuild_analytics(db_path: Path) -> None:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    environment["FINANCE_DB_PATH"] = str(db_path.resolve())
+    environment["FINANCE_DB_DIR"] = str(db_path.parent.resolve())
+
+    with tempfile.TemporaryDirectory(prefix="finance-ledger-dbt-profile-") as directory:
+        profiles_dir = Path(directory)
+        shutil.copyfile(ROOT / "finance_dbt" / "profiles.example.yml", profiles_dir / "profiles.yml")
+        for command in ("seed", "run", "test"):
+            result = subprocess.run(
+                [
+                    "dbt",
+                    command,
+                    "--project-dir",
+                    str(ROOT / "finance_dbt"),
+                    "--profiles-dir",
+                    str(profiles_dir),
+                ],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+            )
+            if result.returncode:
+                detail = (result.stdout + "\n" + result.stderr).strip()
+                raise RuntimeError(f"dbt {command} failed:\n{detail[-6000:]}")
+
+    run_forecasts(db_path, ForecastConfig())
+
+
+def render_statement_uploader(db_path: Path) -> None:
+    with st.expander("Upload statements", expanded=True):
+        st.caption(
+            "Temporary files used during parsing are deleted. Uploaded data remains in this Streamlit session "
+            "until it expires. Review extracted transactions before importing. "
+            "Maximum 25 MB per file, 50 MB total."
+        )
+        files = st.file_uploader(
+            "Choose bank statements",
+            type=["pdf", "csv"],
+            accept_multiple_files=True,
+            key="statement_uploads",
+        )
+        use_ai = st.checkbox(
+            "Try local Ollama for unfamiliar text-based PDFs",
+            value=False,
+            help="Uses the Ollama service configured on the machine running this app. Scanned PDFs still need OCR.",
+        )
+        ai_model = st.text_input("Ollama model", "llama3.1:8b", disabled=not use_ai)
+
+        if files and sum(file.size for file in files) > MAX_TOTAL_UPLOAD_BYTES:
+            st.error("The selected files exceed the 50 MB total upload limit.")
+            return
+
+        if st.button("Parse statements for review", disabled=not files, type="primary"):
+            previews: list[UploadPreview | dict[str, str]] = []
+            for file in files or []:
+                try:
+                    if file.size > MAX_UPLOAD_BYTES:
+                        raise ValueError("Each statement must be 25 MB or smaller.")
+                    previews.append(
+                        parse_uploaded_statement(
+                            file.name,
+                            file.getvalue(),
+                            ai_fallback=use_ai,
+                            ai_model=ai_model.strip() or "llama3.1:8b",
+                        )
+                    )
+                except Exception as exc:
+                    previews.append({"filename": Path(file.name).name, "error": str(exc)})
+            st.session_state["statement_upload_previews"] = previews
+            st.session_state.pop("statement_upload_message", None)
+
+        previews = st.session_state.get("statement_upload_previews", [])
+        if not previews:
+            return
+
+        known_hashes = existing_statement_hashes(db_path)
+        importable: list[UploadPreview] = []
+        needs_warning_acknowledgement = False
+
+        for item in previews:
+            if isinstance(item, dict):
+                st.error(f"{item['filename']}: {item['error']}")
+                continue
+
+            statement = item.statement
+            duplicate = statement.file_hash in known_hashes
+            status_label = "Already imported" if duplicate else item.status.title()
+            with st.expander(f"{item.filename} · {status_label}", expanded=not duplicate):
+                st.write(
+                    f"**Bank:** {statement.bank_name or 'Unknown'}  "
+                    f"**Account:** {statement.account_id or 'Unknown'}  "
+                    f"**Transactions:** {len(statement.rows)}"
+                )
+                if item.status == "failed":
+                    st.error("No usable transactions were extracted. This statement will not be imported.")
+                elif item.status == "warnings":
+                    needs_warning_acknowledgement = True
+                    st.warning("Review the validation messages before importing this statement.")
+                else:
+                    st.success("Validation passed.")
+
+                issues = [line for line in item.validation if line.startswith(("ERROR:", "Row "))]
+                if issues:
+                    st.code("\n".join(issues), language=None)
+                if item.preview_rows:
+                    st.dataframe(pd.DataFrame(item.preview_rows), use_container_width=True, hide_index=True)
+
+            if not duplicate and item.status != "failed":
+                importable.append(item)
+
+        if not importable:
+            st.info("No new valid statements are ready to import.")
+            return
+
+        acknowledge_warnings = True
+        if needs_warning_acknowledgement:
+            acknowledge_warnings = st.checkbox(
+                "I reviewed the warnings and want to import statements with warnings.",
+                key="acknowledge_upload_warnings",
+            )
+
+        if st.button("Import reviewed statements", disabled=not acknowledge_warnings):
+            counts = ingest_statements(
+                db_path,
+                [item.statement for item in importable],
+                pd.Timestamp.now().isoformat(timespec="seconds"),
+            )
+            st.session_state.pop("statement_upload_previews", None)
+            st.session_state.pop("acknowledge_upload_warnings", None)
+            st.session_state["statement_upload_message"] = f"Statement import results: {dict(counts)}"
+            try:
+                with st.spinner("Building dbt models and refreshing forecasts..."):
+                    rebuild_analytics(db_path)
+                st.session_state["statement_upload_message"] += " Analytics and forecasts refreshed."
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as exc:
+                st.session_state.pop("statement_upload_message", None)
+                st.info(f"Raw import completed: {dict(counts)}")
+                st.error(
+                    "Statements were imported into the raw database, but the analytics refresh failed. "
+                    "Use Rebuild analytics in the sidebar after fixing the issue."
+                )
+                st.exception(exc)
+
+        message = st.session_state.pop("statement_upload_message", None)
+        if message:
+            st.success(message)
+
+
 def main() -> None:
     st.title("Finance Ledger Lab")
 
     with st.sidebar:
         st.header("Data Source")
         db_path = Path(st.text_input("SQLite database", str(DEFAULT_DB)))
-        refresh = st.button("Refresh data", use_container_width=True)
+        refresh = st.button("Refresh dashboard", use_container_width=True)
         if refresh:
             st.cache_data.clear()
+        if st.button("Rebuild analytics", disabled=not db_path.exists(), use_container_width=True):
+            try:
+                with st.spinner("Running dbt and refreshing forecasts..."):
+                    rebuild_analytics(db_path)
+                st.cache_data.clear()
+                st.session_state["analytics_refresh_message"] = "Analytics and forecasts refreshed."
+                st.rerun()
+            except Exception as exc:
+                st.error("Analytics refresh failed.")
+                st.exception(exc)
+
+    analytics_message = st.session_state.pop("analytics_refresh_message", None)
+    if analytics_message:
+        st.success(analytics_message)
+
+    render_statement_uploader(db_path)
 
     if not db_path.exists():
-        st.error(f"Database not found: {db_path}")
+        st.info("Upload a statement above to create your local database and start exploring your finances.")
         return
 
     transactions, monthly, category, merchant = load_data(db_path)
