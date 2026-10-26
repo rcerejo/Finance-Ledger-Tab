@@ -1,0 +1,33 @@
+version: 2
+
+models:
+  - name: fct_transactions
+    description: Final analytics-ready transaction fact table.
+    columns:
+      - name: transaction_id
+        tests:
+          - not_null
+          - unique
+      - name: transaction_date
+        tests:
+          - not_null
+      - name: amount
+        tests:
+          - not_null
+      - name: category
+        tests:
+          - not_null
+
+  - name: mart_monthly_spending
+    description: Monthly debit, credit, and net totals.
+    columns:
+      - name: transaction_month
+        tests:
+          - not_null
+          - unique
+
+  - name: mart_category_trends
+    description: Monthly spending by category and subcategory.
+
+  - name: mart_merchant_spending
+    description: Monthly spending by merchant and category.

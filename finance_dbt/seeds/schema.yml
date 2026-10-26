@@ -1,0 +1,34 @@
+version: 2
+
+seeds:
+  - name: merchant_rules
+    description: Rule table for normalizing raw descriptions into merchants.
+    columns:
+      - name: priority
+        tests:
+          - not_null
+      - name: match_pattern
+        tests:
+          - not_null
+      - name: normalized_merchant
+        tests:
+          - not_null
+      - name: merchant_group
+        tests:
+          - not_null
+
+  - name: category_rules
+    description: Rule table for categorizing normalized merchants.
+    columns:
+      - name: priority
+        tests:
+          - not_null
+      - name: merchant_pattern
+        tests:
+          - not_null
+      - name: category
+        tests:
+          - not_null
+      - name: subcategory
+        tests:
+          - not_null

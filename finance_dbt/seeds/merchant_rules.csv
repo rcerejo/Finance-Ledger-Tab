@@ -1,0 +1,33 @@
+priority,match_pattern,normalized_merchant,merchant_group
+10,%MCDONALD%,McDonald's,McDonald's
+10,%MCDONALDS%,McDonald's,McDonald's
+10,%DELTA TECH CAFE%,Delta Tech Cafe,Delta Tech Cafe
+10,%DELTA AIR LINES%,Delta Air Lines Payroll,Delta Air Lines
+10,%MTA%NYCT%,MTA,MTA
+10,%PATH TAPP%,PATH,PATH
+10,%VENMO%,Venmo,Venmo
+10,%PAYPAL%,PayPal,PayPal
+10,%KROGER%,Kroger,Kroger
+10,%PUBLIX%,Publix,Publix
+10,%SAMS CLUB%,Sam's Club,Sam's Club
+10,%UBER%,Uber,Uber
+10,%LYFT%,Lyft,Lyft
+10,%FID BKG SVC%,Fidelity,Fidelity
+10,%CAPITAL ONE SERV%,Capital One Payroll,Capital One
+10,%ALLY BANK%,Ally Bank,Ally Bank
+10,%DIVIDEND%,Dividend,Dividend
+10,%BA ELECTRONIC PAYMENT%,Bank of America Payment,Bank of America
+10,%BANK OF AMERICA%CREDIT CARD PAYMENT%,Bank of America Payment,Bank of America
+10,%IRS TREAS 310%,IRS,IRS
+10,%GEORGIA DEPARTME%,Georgia Department of Revenue,Georgia Department of Revenue
+10,%TRANSFER TO SHARE%,Internal Transfer,Internal Transfer
+10,%TRANSFER FROM SHARE%,Internal Transfer,Internal Transfer
+10,%TST*AL DENTE%,Al Dente Pasta,Al Dente Pasta
+10,%WENDYS%,Wendy's,Wendy's
+10,%HANA GROUP%,Hana Group,Hana Group
+10,%SAMMYS HALAL%,Sammy's Halal,Sammy's Halal
+10,%99 CENTS DELICIOUS PIZZA%,99 Cents Delicious Pizza,99 Cents Delicious Pizza
+10,%PREVITI PASTA%,Previti Pizza,Previti Pizza
+10,%CVS/PHARMACY%,CVS,CVS
+10,%WEST VILLAGE FINEST DELI%,West Village Finest Deli,West Village Finest Deli
+10,%KALSHI%,Kalshi,Kalshi
