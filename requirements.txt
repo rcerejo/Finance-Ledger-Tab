@@ -4,5 +4,5 @@ scikit-learn
 joblib
 plotly
 streamlit
-dbt-core
-dbt-sqlite
+dbt-core==1.11.12
+dbt-sqlite==1.10.0
