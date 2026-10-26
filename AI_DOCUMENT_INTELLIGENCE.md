@@ -1,84 +1,36 @@
 # AI-Assisted Statement Parsing
 
-This project treats AI as a fallback and review layer, not as the source of truth
-for financial data.
-
-## Architecture
+AI is an optional fallback, not the source of truth for financial data. The preferred flow is:
 
 ```text
-PDF / CSV statement
-    -> text extraction
-    -> bank-specific rule parser
-    -> optional LLM fallback for unknown/low-confidence layouts
-    -> schema validation
-    -> raw SQLite ingestion tables
-    -> dbt staging/intermediate/mart models
-    -> Streamlit analytics dashboard
+PDF/CSV -> text extraction -> bank-specific parser -> optional LLM fallback
+       -> validation -> SQLite -> dbt models -> dashboard
 ```
 
-## Why This Design
+Deterministic parsers handle known layouts. The LLM can help with unfamiliar text-based layouts; extracted fields should still be reviewed and validated. Scanned/image-only statements require OCR before text parsing.
 
-Rule-based parsing is still the safest path for dates, amounts, debit/credit
-signs, and duplicate handling. These fields need repeatable behavior. The LLM is
-useful when a new bank statement format is unfamiliar or when the rule parser
-cannot confidently identify rows.
+## Local Ollama
 
-The parser validates LLM output before loading it:
-
-- transaction dates must parse
-- amounts must parse numerically
-- descriptions are required
-- dates must fall inside the statement period when that period is known
-- LLM rows are marked with `parser_method = llm_structured_extraction`
-- LLM rows are marked with an AI review confidence value
-
-## Local Ollama Setup
-
-Install Ollama, then pull a free local model:
+Install Ollama and download a model, for example:
 
 ```powershell
 ollama pull llama3.1:8b
 ```
 
-Recommended model:
-
-```text
-llama3.1:8b
-```
-
-Other reasonable free local models:
-
-```text
-mistral:7b
-qwen2.5:7b
-```
-
-## Run With AI Fallback
-
-Use the normal parser first and only call the LLM for unknown or low-confidence
-PDF layouts:
+With the project virtual environment active and from the project root:
 
 ```powershell
-& C:/Users/rosha/anaconda3/python.exe "C:/Users/rosha/Documents/Codex/2026-07-08/can-you-write-a-script-to/outputs/bank_statement_parser.py" "C:/Users/rosha/Downloads/your_statement.pdf" -o "C:/Users/rosha/Downloads/transactions_ai.csv" --ai-fallback --ai-model llama3.1:8b
+python ingestion/statement_parser.py "C:\path\to\statement.pdf" -o outputs/transactions_ai.csv --ai-fallback --ai-model llama3.1:8b
 ```
 
-To ingest into SQLite:
+To also ingest into SQLite:
 
 ```powershell
-& C:/Users/rosha/anaconda3/python.exe "C:/Users/rosha/Documents/Codex/2026-07-08/can-you-write-a-script-to/outputs/bank_statement_parser.py" "C:/Users/rosha/Downloads/your_statement.pdf" -o "C:/Users/rosha/Downloads/transactions_ai.csv" --ingest --db "C:/Users/rosha/Documents/Codex/2026-07-08/can-you-write-a-script-to/outputs/finance_raw_final.sqlite" --ai-fallback --ai-model llama3.1:8b
+python ingestion/statement_parser.py "C:\path\to\statement.pdf" -o outputs/transactions_ai.csv --ingest --db outputs/finance_raw.sqlite --ai-fallback --ai-model llama3.1:8b
 ```
 
-## Evaluation Plan
+Check the generated transactions and validation report before using the data downstream. AI-extracted transactions should not be assumed correct merely because they passed schema validation.
 
-To make this resume-strong, create a labeled test set of 100 to 300
-transactions. Compare parser output to the labeled data at the field level:
+## Evaluation
 
-- transaction date accuracy
-- posting date accuracy
-- merchant/description accuracy
-- amount accuracy
-- debit/credit accuracy
-- category accuracy
-
-This turns the project from "used an LLM on PDFs" into a validated document
-intelligence pipeline.
+Measure extraction against manually reviewed examples. Track field-level accuracy for transaction date, posting date, description/merchant, amount, debit/credit direction, and category. Keep evaluation statements and expected labels private; do not commit real financial documents.

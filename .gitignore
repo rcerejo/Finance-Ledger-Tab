@@ -7,13 +7,10 @@ venv/
 
 # Local/private finance data and generated outputs
 outputs/*
-!outputs/bank_statement_parser.py
-!outputs/rename_project_folder.ps1
 *.sqlite
 *.db
 *.csv
 !finance_dbt/seeds/*.csv
-!transform/seeds/*.csv
 *.joblib
 *.validation.txt
 

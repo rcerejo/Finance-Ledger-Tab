@@ -1,105 +1,64 @@
 # Finance Ledger Lab
 
-An end-to-end personal finance analytics project that turns bank statement files into validated transactions, dbt models, category suggestions, forecasts, and an interactive dashboard.
+Upload bank statements, normalize transactions into SQLite, build analytics with dbt, and explore results in Streamlit.
 
-## What it does
+## Quick start (Windows PowerShell)
 
-- Ingests PDF and CSV statements into SQLite, preserving source-file metadata and raw transaction text.
-- Parses supported layouts for Alliant Credit Union, Bank of America, and Capital One, with a conservative generic parser and optional local Ollama fallback for unfamiliar PDF layouts.
-- Uses dbt staging, intermediate, and mart models for normalization, deduplication, categorization, and analytics.
-- Provides editable merchant and category mapping seeds.
-- Generates TF-IDF and optional local LLM category suggestions for review. Suggestions do not silently modify transaction categories.
-- Builds simple rolling-baseline spending forecasts and category anomaly flags.
-- Displays transactions and analytics in Streamlit.
-
-## Architecture
-
-```text
-Bank statement PDF/CSV
-        |
-        v
-Python ingestion and validation ---- optional Ollama extraction/category suggestions
-        |
-        v
-SQLite raw_statement_files + raw_transactions
-        |
-        v
-dbt staging -> intermediate -> fact/mart tables
-        |                         |
-        v                         v
-Forecasting scripts          Streamlit dashboard
-```
-
-## Setup
-
-Use Python 3.10 or newer. From the project root:
+Run these commands from the project root. Python 3.10+ is required.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-```
-
-The checked-in dbt profile is an example. Create a local profile using the provided template and point it to your own SQLite database. Keep personal statements and databases out of version control; `.gitignore` excludes local output data.
-
-```powershell
+New-Item -ItemType Directory -Force outputs | Out-Null
 Copy-Item finance_dbt\profiles.example.yml finance_dbt\profiles.yml
-```
-
-Set `FINANCE_DB_PATH` to the absolute path of the SQLite database before running dbt. For example:
-
-```powershell
-$env:FINANCE_DB_PATH = (Join-Path (Get-Location) "outputs/finance_raw_final.sqlite")
+$env:FINANCE_DB_PATH = (Join-Path (Get-Location) "outputs/finance_raw.sqlite")
 $env:FINANCE_DB_DIR = (Join-Path (Get-Location) "outputs")
 ```
 
-## Run the pipeline
+If PowerShell blocks virtual-environment activation, run `Set-ExecutionPolicy -Scope Process RemoteSigned` and activate again.
 
-Parse and ingest a statement:
+## Process a statement
+
+Replace the example path with a statement PDF or CSV you trust. The parser writes a CSV preview and loads parsed transactions into the local SQLite database.
 
 ```powershell
-python outputs/bank_statement_parser.py "C:\path\to\statement.pdf" --ingest --db outputs/finance_raw_final.sqlite -o outputs/transactions.csv
+python ingestion/statement_parser.py "C:\path\to\statement.pdf" --ingest --db outputs/finance_raw.sqlite -o outputs/transactions.csv
 ```
 
-Build and validate dbt models, then refresh forecast tables:
+Build and test the dbt models:
 
 ```powershell
 dbt seed --project-dir finance_dbt --profiles-dir finance_dbt
 dbt run --project-dir finance_dbt --profiles-dir finance_dbt
 dbt test --project-dir finance_dbt --profiles-dir finance_dbt
-python forecasting/baseline_forecasts.py --db outputs/finance_raw_final.sqlite
 ```
 
-Start the dashboard:
+Optionally refresh forecasts, then open the dashboard:
 
 ```powershell
+python forecasting/baseline_forecasts.py --db outputs/finance_raw.sqlite
 streamlit run app/streamlit_app.py
 ```
 
 ## Optional local AI
 
-Install Ollama separately and download a model such as `llama3.1:8b`. Then run:
+The parser can use a locally running Ollama model as a fallback for unfamiliar text-based PDF layouts. Install Ollama and pull a model first:
 
 ```powershell
 ollama pull llama3.1:8b
-python ml/ai_category_suggester.py --db outputs/finance_raw_final.sqlite --model llama3.1:8b --limit 25
+python ingestion/statement_parser.py "C:\path\to\statement.pdf" -o outputs/transactions.csv --ai-fallback --ai-model llama3.1:8b
 ```
 
-For an unfamiliar text-based PDF layout, the parser also supports `--ai-fallback`. Review its output and validation report before relying on it. Scanned PDFs require OCR.
+AI and TF-IDF category outputs are suggestions for review, not automatic replacements for dbt categories. Scanned/image-only PDFs need OCR. Review parser output and validation before relying on it; bank formats vary and support is not universal.
 
-## Project layout
+## Project map
 
-| Path | Purpose |
-| --- | --- |
-| `outputs/bank_statement_parser.py` | PDF/CSV ingestion, validation, and SQLite loading |
-| `finance_dbt/` | dbt project, models, tests, and mapping seeds |
-| `ml/` | TF-IDF classifier and optional Ollama suggestion script |
-| `forecasting/` | Baseline forecasts and category anomaly calculations |
-| `app/` | Streamlit dashboard |
-| `transform/` | Earlier standalone transformation runner retained for comparison |
+- `ingestion/`: statement parsing, validation, and SQLite loading
+- `finance_dbt/`: canonical dbt project, mapping seeds, tests, and marts
+- `ml/`: TF-IDF and optional Ollama category suggestions
+- `forecasting/`: baseline forecasts and anomaly calculations
+- `app/`: Streamlit dashboard
+- `outputs/`: local database and generated files (ignored by Git)
 
-## Data and model limitations
-
-Statement layouts vary, so parser support is format-specific. Always inspect the generated validation report when adding a bank or statement layout. Forecasts use a short-history rolling baseline and are exploratory, not financial advice. AI and TF-IDF outputs are suggestions for review; the dbt rules remain the categorization source of truth.
-
-The local SQLite database contains sensitive financial information and is intentionally excluded from Git. The current app is a local single-user portfolio project; it is not configured for public multi-user hosting or account isolation.
+The database contains sensitive financial data and is intentionally kept out of version control. This is a local single-user project; it is not configured for public multi-user hosting or account isolation.

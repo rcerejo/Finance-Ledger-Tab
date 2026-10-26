@@ -11,11 +11,11 @@ PDF statements. Scanned/image-only PDFs will need OCR before this script can
 read them.
 
 Usage:
-  python bank_statement_parser.py "C:\\path\\statement.pdf" -o transactions.csv
-  python bank_statement_parser.py "C:\\path\\statements_folder" -o transactions.csv
-  python bank_statement_parser.py statement.pdf --debug-text debug
-  python bank_statement_parser.py unknown_bank.pdf --ai-fallback --ai-model llama3.1:8b
-  python bank_statement_parser.py statement1.pdf statement2.pdf --json
+  python ingestion/statement_parser.py "C:\\path\\statement.pdf" -o outputs/transactions.csv
+  python ingestion/statement_parser.py "C:\\path\\statements_folder" -o outputs/transactions.csv
+  python ingestion/statement_parser.py statement.pdf --debug-text outputs/debug
+  python ingestion/statement_parser.py unknown_bank.pdf --ai-fallback --ai-model llama3.1:8b
+  python ingestion/statement_parser.py statement1.pdf statement2.pdf --json
 """
 
 from __future__ import annotations
@@ -1192,15 +1192,15 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         print(
             "\nExamples:\n"
-            r'  python bank_statement_parser.py "C:\Users\rosha\Downloads\DocumentDisplay.pdf" -o transactions.csv'
+            r'  python ingestion/statement_parser.py "C:\path\to\statement.pdf" -o outputs/transactions.csv'
             "\n"
-            r'  python bank_statement_parser.py "C:\Users\rosha\Downloads" -o transactions.csv'
+            r'  python ingestion/statement_parser.py "C:\path\to\statements" -o outputs/transactions.csv'
             "\n"
-            r'  python bank_statement_parser.py statement.pdf --debug-text debug'
+            r'  python ingestion/statement_parser.py statement.pdf --debug-text outputs/debug'
             "\n"
-            r'  python bank_statement_parser.py statement.pdf --ingest --db finance_raw.sqlite'
+            r'  python ingestion/statement_parser.py statement.pdf --ingest --db outputs/finance_raw.sqlite'
             "\n"
-            r'  python bank_statement_parser.py unknown_bank.pdf --ai-fallback --ai-model llama3.1:8b'
+            r'  python ingestion/statement_parser.py unknown_bank.pdf --ai-fallback --ai-model llama3.1:8b'
         )
         return 2
 
